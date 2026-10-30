@@ -1,0 +1,2 @@
+pedalboard==0.9.26
+numpy==2.3.4
