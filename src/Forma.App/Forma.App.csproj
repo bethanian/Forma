@@ -6,7 +6,7 @@
     <RootNamespace>Forma.App</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets/Forma.ico</ApplicationIcon>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Product>Forma</Product>
     <Description>A native Windows media utility</Description>
     <Platforms>x64</Platforms>

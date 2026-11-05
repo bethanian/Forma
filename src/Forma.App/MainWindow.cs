@@ -41,6 +41,7 @@ public sealed class MainWindow : Window
     private readonly Windows.UI.ViewManagement.AccessibilitySettings Accessibility = new();
     private string CurrentPage = "Download";
     private CancellationTokenSource? Inspection;
+    private CancellationTokenSource? DependencyUpdate;
 
     public MainWindow()
     {
@@ -90,7 +91,7 @@ public sealed class MainWindow : Window
         var Accelerator = new KeyboardAccelerator { Key = VirtualKey.O, Modifiers = VirtualKeyModifiers.Control };
         Accelerator.Invoked += (_, Args) => { if (Pages.TryGetValue(CurrentPage, out var Page) && Page.Tag is Action Pick) Pick(); Args.Handled = true; };
         Root.KeyboardAccelerators.Add(Accelerator);
-        Closed += (_, _) => { Inspection?.Cancel(); Queue.CancelAll(); Player.MediaPlayer?.Dispose(); Settings.Save(); };
+        Closed += (_, _) => { Inspection?.Cancel(); DependencyUpdate?.Cancel(); Queue.CancelAll(); Player.MediaPlayer?.Dispose(); Settings.Save(); };
         Root.Loaded += (_, _) => { if (Navigation.SelectedItem is null) SelectPage(Enum.TryParse<ToolKind>(Settings.LastTool, out _) ? Settings.LastTool : "Download"); };
     }
 
@@ -230,13 +231,14 @@ public sealed class MainWindow : Window
         FileBorder.Drop += async (_, Args) => { if (Args.DataView.Contains(StandardDataFormats.StorageItems)) await GuardAsync(async () => AddFiles((await Args.DataView.GetStorageItemsAsync()).Select(File => File.Path).ToArray())); };
         Panel.Children.Add(FileBorder);
         var Format = Choice("Output format", Tool == ToolKind.AudioEffects ? ["wav", "mp3", "flac"] : Tool == ToolKind.Compress ? ["mp4", "mkv"] : ["mp3", "wav", "flac", "aac", "mp4", "mkv", "webm"]);
-        var Preset = Choice(Tool == ToolKind.AudioEffects ? "Space" : "Preset", Tool == ToolKind.AudioEffects ? EffectOptions.Presets.Keys : ["Smaller File", "Balanced", "Higher Quality"], Tool == ToolKind.AudioEffects ? 0 : 1);
+        var Preset = Choice("Preset", Tool == ToolKind.AudioEffects ? EffectOptions.Presets.Keys : ["Smaller File", "Balanced", "Higher Quality"], Tool == ToolKind.AudioEffects ? 0 : 1);
         var Crf = Number("Video quality · CRF", Settings.DefaultCrf, 0, 51);
         var Codec = Choice("Video codec", ["H.264", "H.265"]);
         var Resolution = Choice("Maximum resolution", ["Original", "2160p", "1440p", "1080p", "720p", "480p"]);
         var Speed = Choice("Encoding speed", ["fast", "medium", "slow"], 1);
         var Bitrate = Choice("Audio bitrate", ["128 kbps", "192 kbps", "256 kbps", "320 kbps"], Settings.DefaultBitrate switch { 128 => 0, 256 => 2, 320 => 3, _ => 1 });
-        var EffectControls = new[] { Number("Speed", .92, .7, 1, .01), Number("Reverb wet", .6, 0, 1, .05), Number("Room size", .85, 0, 1, .05), Number("Damping", .25, 0, 1, .05), Number("Low-pass · Hz", 10000, 2000, 20000, 500), Number("Stereo width", 1.4, .5, 2.5, .1), Number("Chorus mix", .15, 0, 1, .05) };
+        var EffectControls = new[] { Number("Speed & pitch", .92, .7, 1.25, .01), Number("Reverb wet", .6, 0, 1, .05), Number("Room size", .85, 0, 1, .05), Number("Damping", .25, 0, 1, .05), Number("Low-pass · Hz", 10000, 500, 20000, 500), Number("Stereo width", 1.4, .5, 2.5, .1), Number("Chorus mix", .15, 0, 1, .05), Number("High-pass · Hz", 40, 20, 800, 10), Number("Echo time · ms", 0, 0, 600, 10), Number("Echo mix", 0, 0, .3, .01), Number("Tape warmth", 0, 0, .6, .05), Number("Bass · dB", 0, -6, 6, .5), Number("Chorus rate · Hz", .5, .1, 2, .05), Number("Reverb tail · seconds", 0, 0, 4, .25) };
+        var PresetNote = Text(EffectOptions.Description((string)Preset.SelectedItem), .65);
         if (Tool == ToolKind.Convert) Panel.Children.Add(Format);
         else
         {
@@ -244,30 +246,34 @@ public sealed class MainWindow : Window
             Options.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) }); Options.ColumnDefinitions.Add(new() { Width = new(1, GridUnitType.Star) });
             Options.Children.Add(Preset); Microsoft.UI.Xaml.Controls.Grid.SetColumn(Format, 1); Options.Children.Add(Format); Panel.Children.Add(Options);
         }
+        if (Tool == ToolKind.AudioEffects) Panel.Children.Add(PresetNote);
         var Advanced = Stack(12);
         if (Tool == ToolKind.AudioEffects) foreach (var Control in EffectControls) Advanced.Children.Add(Control);
         else { Advanced.Children.Add(Codec); Advanced.Children.Add(Resolution); Advanced.Children.Add(Crf); Advanced.Children.Add(Speed); }
         Advanced.Children.Add(Bitrate);
         Panel.Children.Add(new Expander { Header = "Advanced", Content = Advanced, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
-        Preset.SelectionChanged += (_, _) =>
+        void ApplyPreset()
         {
             if (Tool == ToolKind.AudioEffects)
             {
                 var Effects = EffectOptions.Presets[(string)Preset.SelectedItem];
-                var Values = new[] { Effects.Speed, Effects.Wet, Effects.Room, Effects.Damping, Effects.Lowpass, Effects.Width, Effects.Chorus };
+                var Values = new[] { Effects.Speed, Effects.Wet, Effects.Room, Effects.Damping, Effects.Lowpass, Effects.Width, Effects.Chorus, Effects.Highpass, Effects.DelayMs, Effects.DelayMix, Effects.Warmth, Effects.BassDb, Effects.ChorusRate, Effects.TailSeconds };
                 for (var Index = 0; Index < Values.Length; Index++) EffectControls[Index].Value = Values[Index];
+                PresetNote.Text = EffectOptions.Description((string)Preset.SelectedItem);
             }
             else Crf.Value = Preset.SelectedIndex switch { 0 => 30, 2 => 20, _ => 25 };
-        };
+        }
+        Preset.SelectionChanged += (_, _) => ApplyPreset();
+        if (Tool == ToolKind.AudioEffects) ApplyPreset();
         var Output = Destination(Panel);
         void Start(bool Preview)
         {
             if (Files.Count == 0) throw new ArgumentException("Choose an input file first.");
             var Values = EffectControls.Select(Control => Control.Value).ToArray();
-            var Effects = new EffectOptions(Values[0], Values[1], Values[2], Values[3], Values[4], Values[5], Values[6]);
+            var Effects = new EffectOptions(Values[0], Values[1], Values[2], Values[3], Values[4], Values[5], Values[6], Values[7], Values[8], Values[9], Values[10], Values[11], Values[12], Values[13]);
             if (!double.IsFinite(Crf.Value)) throw new ArgumentException("Enter a valid CRF value.");
             var Height = Resolution.SelectedIndex == 0 ? 0 : int.Parse(((string)Resolution.SelectedItem).TrimEnd('p'));
-            var Requests = Files.Select(Input => new JobRequest(Tool, Input, Preview ? Path.Combine(AppSettings.DataFolder, "Previews") : Output.Text.Trim(), Preview ? "wav" : (string)Format.SelectedItem, Codec.SelectedIndex == 0 ? "libx264" : "libx265", (int)Crf.Value, Height, (string)Speed.SelectedItem, int.Parse(((string)Bitrate.SelectedItem).Split(' ')[0]), Effects: Tool == ToolKind.AudioEffects ? Effects : null, Preview: Preview)).ToArray();
+            var Requests = Files.Select(Input => new JobRequest(Tool, Input, Preview ? Path.Combine(AppSettings.DataFolder, "Previews") : Output.Text.Trim(), Preview ? "wav" : (string)Format.SelectedItem, Codec.SelectedIndex == 0 ? "libx264" : "libx265", (int)Crf.Value, Height, (string)Speed.SelectedItem, int.Parse(((string)Bitrate.SelectedItem).Split(' ')[0]), Effects: Tool == ToolKind.AudioEffects ? Effects : null, Preview: Preview, EffectName: Tool == ToolKind.AudioEffects ? (string)Preset.SelectedItem : "")).ToArray();
             foreach (var Request in Requests) MediaEngine.Validate(Request);
             foreach (var Request in Requests) Queue.Enqueue(Request);
             Notify(Preview ? "Creating a 15-second preview…" : $"{Requests.Length} file{(Requests.Length == 1 ? "" : "s")} queued.");
@@ -370,10 +376,25 @@ public sealed class MainWindow : Window
         var Versions = new TextBlock { Text = "Check installed tools and versions.", TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true, Opacity = .7 };
         var DependencyPanel = Stack(12);
         DependencyPanel.Children.Add(Button("Check dependencies", () => _ = GuardAsync(async () => { Versions.Text = "Checking…"; Versions.Text = await Dependencies.DescribeAsync(); })));
+        Button? Update = null;
+        var StopUpdate = Button("Cancel update", () => DependencyUpdate?.Cancel()); StopUpdate.Visibility = Visibility.Collapsed;
+        Update = Button("Update downloader", () => _ = GuardAsync(async () =>
+        {
+            if (Queue.Jobs.Any(Job => Job.Request.Tool == ToolKind.Download && Job.IsActive)) throw new IOException("Finish or cancel active downloads before updating yt-dlp.");
+            DependencyUpdate?.Dispose(); DependencyUpdate = new(); Update!.IsEnabled = false; StopUpdate.Visibility = Visibility.Visible;
+            try
+            {
+                var Version = await DownloaderUpdate.InstallAsync(Dependencies.ManagedToolsFolder, Message => DispatcherQueue.TryEnqueue(() => Versions.Text = Message), DependencyUpdate.Token);
+                Versions.Text = await Dependencies.DescribeAsync();
+                Notify($"yt-dlp {Version} installed. Retry the download in History." + (File.Exists(Path.Combine(Settings.ToolFolder, "yt-dlp.exe")) ? " Your custom media tools folder takes priority; clear it to use the managed downloader." : ""), InfoBarSeverity.Success);
+            }
+            finally { Update.IsEnabled = true; StopUpdate.Visibility = Visibility.Collapsed; }
+        }));
+        DependencyPanel.Children.Add(Update); DependencyPanel.Children.Add(StopUpdate);
         DependencyPanel.Children.Add(Versions);
-        DependencyPanel.Children.Add(Text("Forma never installs or updates tools automatically. Use the documented setup commands, review the publisher and version, then check dependencies again.", .65));
+        DependencyPanel.Children.Add(Text("Update downloader installs the official stable yt-dlp build after checking its SHA-256. Updates run only when requested. FFmpeg and Deno use your installed copies.", .65));
         Panel.Children.Add(new Expander { Header = "Dependencies", Content = DependencyPanel, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
-        Panel.Children.Add(Text("Forma 1.0 · Local processing · No accounts or telemetry\nOriginal code MIT. FFmpeg, yt-dlp, Deno and Pedalboard retain their own licenses.", .55));
+        Panel.Children.Add(Text("Forma 1.1 · Local processing · No accounts or telemetry\nOriginal code MIT. FFmpeg, yt-dlp, Deno and Pedalboard retain their own licenses.", .55));
         return Scroll(Panel);
     }
     private void OnJobChanged(MediaJob Job)
@@ -388,7 +409,7 @@ public sealed class MainWindow : Window
         ActivityProgress.IsIndeterminate = Running?.IsIndeterminate ?? true;
         if (Job.State is JobState.Completed or JobState.Failed or JobState.Cancelled && Announced.Add(Job.Id))
         {
-            Notify(Job.State == JobState.Completed ? $"Ready · {Path.GetFileName(Job.Output)}" : $"{Job.State} · {Job.Name}", Job.State == JobState.Failed ? InfoBarSeverity.Error : Job.State == JobState.Completed ? InfoBarSeverity.Success : InfoBarSeverity.Informational);
+            Notify(Job.State == JobState.Completed ? $"Ready · {Path.GetFileName(Job.Output)}" : Job.State == JobState.Failed ? Job.Message.Split('\n')[0] : $"{Job.State} · {Job.Name}", Job.State == JobState.Failed ? InfoBarSeverity.Error : Job.State == JobState.Completed ? InfoBarSeverity.Success : InfoBarSeverity.Informational);
             if (Job.State == JobState.Completed)
             {
                 if (Settings.CompletionSound) NativeMethods.MessageBeep(0x40);

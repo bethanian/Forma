@@ -10,7 +10,7 @@ Forma's MIT license covers original source only. External dependencies retain th
 | [SQLitePCLRaw](https://github.com/ericsink/SQLitePCL.raw) | Apache-2.0; included |
 | [SQLite](https://sqlite.org/copyright.html) | SQLite public domain; native package may carry additional packaging notices; included |
 | [FFmpeg / ffprobe](https://ffmpeg.org/legal.html) | Normally LGPL-2.1-or-later; optional GPL components change the build's license. libx264/libx265 builds are GPL. User-installed, excluded from release |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp#license) | Project source Unlicense; Windows executable bundles third-party components and can be GPLv3+ as a combined binary. User-installed, excluded |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp#license) | Project source Unlicense; Windows executable bundles third-party components and can be GPLv3+ as a combined binary. Installed separately from the publisher, manually or through Forma's explicitly requested verified updater; excluded from the Forma ZIP |
 | [yt-dlp EJS](https://github.com/yt-dlp/ejs) | Check license/third-party notices of the exact official yt-dlp build. Included by its publisher, not by Forma |
 | [Deno](https://github.com/denoland/deno) | MIT plus bundled third-party licenses; user-installed, excluded |
 | [Python](https://docs.python.org/3/license.html) | PSF license and bundled notices; user-installed, excluded |

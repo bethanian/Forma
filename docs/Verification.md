@@ -1,4 +1,16 @@
-# Verification record — 2026-10-30
+# Verification record
+
+## Forma 1.1 — 2026-11-05
+
+The reported YouTube failure was traced to the executable actually resolved from PATH: yt-dlp 2026.06.09. The failed job had HTTP 403 in its stored details. Installing the official stable 2026.10.26 build with its publisher SHA-256 fixed the same public URL. The original globally installed executable was preserved; Forma now resolves its managed tool copy ahead of PATH and reports outdated versions before starting work.
+
+Live integration checks passed for official release download/checksum/install in a test folder, public media inspection/download, YouTube format inspection, a complete 360p video/audio download and merge, and full MP3 extraction. The reproduced video contains both streams and has a probed duration of 746.214 seconds. No cookie extraction, alternate account, access-control bypass or client impersonation was used. Instagram remains unverified.
+
+The final combined integration run passed **123 checks**, including the live workflows and new audio fixture; its local report is `artifacts/tests/20261105-232915/results.json`. The audio fixture measures all six new presets on an original eight-second stereo chord progression: finite samples, approximately -1 dBFS sample peak, duration including tails, silent endpoints, positive stereo correlation, bounded block-boundary jumps, actual high-frequency attenuation for Underwater, increased bass balance for Midnight Drive, and silent mono input. The original six preset choices also passed timing/headroom checks. Saved 1.0 effects deserialize with their original defaults for newly added controls. The app built with zero warnings/errors and was relaunched from the updated local executable. The resolved NuGet dependency audit reported no known vulnerable packages at verification time.
+
+These are signal and behavior checks, not a subjective listening certification. No commercial song is included in the repository, test fixtures or release. See [AudioEffects.md](AudioEffects.md) for the new sound directions and their limitations.
+
+## Forma 1.0 — 2026-10-30
 
 Environment: Windows x64, .NET SDK 10.0.403, Windows App SDK 1.8.260921001, FFmpeg/ffprobe 9.0.2, Python 3.14, Pedalboard 0.9.26, NumPy 2.3.4. Local test dependencies are isolated under `.tools` where practical; system media installations are not modified.
 

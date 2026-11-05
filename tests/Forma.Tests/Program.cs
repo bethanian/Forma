@@ -29,7 +29,7 @@ async Task<MediaJob> ProcessAsync(JobRequest Request)
     await Engine.ExecuteAsync(Job, (Value, Message) => { Job.Progress = Value; Job.Message = Message; }, default);
     Check(File.Exists(Job.Output) && Job.OutputBytes > 0 && Job.Progress == 100, $"{Request.Tool} {Request.Format} {Request.Codec} output");
     var Info = await Engine.ProbeAsync(Job.Output, default);
-    Check(Info.Duration > 1.5 && Info.Duration < 4, "Output duration valid");
+    Check(Info.Duration > 1.5 && Info.Duration < 6, "Output duration valid");
     Check(!Directory.Exists(Path.Combine(Request.Destination, ".forma-" + Job.Id)), "Staging cleaned");
     return Job;
 }
@@ -39,13 +39,18 @@ await ProcessAsync(new(ToolKind.Convert, Video, Root, "mp3"));
 foreach (var Codec in new[] { "libx264", "libx265" }) await ProcessAsync(new(ToolKind.Compress, Video, Root, Codec: Codec, Height: 480));
 foreach (var Preset in EffectOptions.Presets)
 {
-    var Job = await ProcessAsync(new(ToolKind.AudioEffects, Audio, Root, "wav", Effects: Preset.Value));
+    Preset.Value.Validate();
+    var Job = await ProcessAsync(new(ToolKind.AudioEffects, Audio, Root, "wav", Effects: Preset.Value, EffectName: Preset.Key));
     var Info = await Engine.ProbeAsync(Job.Output, default);
-    Check(Math.Abs(Info.Duration - 2 / Preset.Value.Speed) < .03, Preset.Key + " slowdown");
+    Check(Math.Abs(Info.Duration - (2 / Preset.Value.Speed + Preset.Value.TailSeconds)) < .03, Preset.Key + " speed and tail duration");
     var Peak = await Runner.RunAsync(PythonPath, ["-c", "import sys,numpy as n; from pedalboard.io import AudioFile;\nf=AudioFile(sys.argv[1]); a=f.read(f.frames); print(float(n.max(n.abs(a)))); assert n.isfinite(a).all(); assert n.max(n.abs(a)) < .9; assert n.max(n.abs(a)) > .85", Job.Output], null, default);
     Check(double.Parse(Peak.Trim(), System.Globalization.CultureInfo.InvariantCulture) < .9, Preset.Key + " finite audio / -1 dBFS headroom");
 }
 Check(SourceHash.SequenceEqual(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(Audio))), "Original source unchanged");
+var PresetsPath = Path.Combine(Root, "presets.json");
+await File.WriteAllTextAsync(PresetsPath, JsonSerializer.Serialize(EffectOptions.Presets));
+Console.WriteLine(await Runner.RunAsync(PythonPath, [Path.Combine(Workspace, "tests", "AudioQuality.py"), Path.Combine(Root, "Listening"), PresetsPath, Path.Combine(Workspace, "worker", "dreamy_worker.py")], null, default));
+Check(true, "Six musical stereo fixtures, spectral balance, tails, fades, mono compatibility, streaming continuity and silence");
 var First = await ProcessAsync(new(ToolKind.Convert, Audio, Root, "mp3"));
 var Second = await ProcessAsync(new(ToolKind.Convert, Audio, Root, "mp3"));
 Check(First.Output != Second.Output && File.Exists(First.Output), "Collision creates unique output");
@@ -56,6 +61,10 @@ await RejectAsync(() => Engine.ExecuteAsync(new() { Request = new(ToolKind.Conve
 foreach (var Url in new[] { "file:///C:/test", "https://localhost/test", "https://user:password@example.com", "-o hacked" })
     await RejectAsync(() => { MediaEngine.Validate(new(ToolKind.Download, Url, Root)); return Task.CompletedTask; }, "Reject unsafe URL " + Url.Split(':')[0]);
 await RejectAsync(() => { new EffectOptions(Speed: double.NaN).Validate(); return Task.CompletedTask; }, "Reject nonfinite effects");
+await RejectAsync(() => { new EffectOptions(DelayMix: .9).Validate(); return Task.CompletedTask; }, "Reject excessive echo feedback mix");
+await RejectAsync(() => { new EffectOptions(Highpass: 800, Lowpass: 500).Validate(); return Task.CompletedTask; }, "Reject crossed audio filters");
+var LegacyEffects = JsonSerializer.Deserialize<EffectOptions>("{\"Speed\":0.92,\"Wet\":0.6,\"Room\":0.85,\"Damping\":0.25,\"Lowpass\":10000,\"Width\":1.4,\"Chorus\":0.15}")!;
+Check(LegacyEffects.Highpass == 40 && LegacyEffects.DelayMix == 0 && LegacyEffects.TailSeconds == 0, "Original saved effects retain compatible defaults");
 var Cancellation = new CancellationTokenSource(250);
 var Timer = Stopwatch.StartNew();
 await RejectAsync(() => Runner.RunAsync(Dependencies.Resolve("ffmpeg"), ["-v", "error", "-re", "-f", "lavfi", "-i", "sine=duration=60", "-f", "null", "-"], null, Cancellation.Token), "Process cancellation");
@@ -77,12 +86,26 @@ await Task.Delay(500);
 Check(Slow.State == JobState.Cancelled, "Queued job cancellation");
 if (Environment.GetEnvironmentVariable("FORMA_NETWORK_TESTS") == "1")
 {
+    var Installed = await DownloaderUpdate.InstallAsync(Path.Combine(Root, "managed-tools"));
+    Check(Version.Parse(Installed) >= DownloaderUpdate.MinimumVersion && File.Exists(Path.Combine(Root, "managed-tools", "yt-dlp.exe")), "Official downloader update and checksum validation");
     var Url = "https://download.blender.org/peach/trailer/trailer_400p.ogg";
     var Choices = await Engine.InspectAsync(Url, default);
     Check(Choices.Count > 1, "Live public URL format inspection");
     var Download = new MediaJob { Request = new(ToolKind.Download, Url, Root) };
     await Engine.ExecuteAsync(Download, (_, _) => { }, default);
     Check(File.Exists(Download.Output) && Download.OutputBytes > 1000, "Live yt-dlp download, validation and publication");
+}
+if (Environment.GetEnvironmentVariable("FORMA_YOUTUBE_URL") is { Length: > 0 } YouTubeUrl)
+{
+    var Choices = await Engine.InspectAsync(YouTubeUrl, default);
+    Check(Choices.Count > 2, "YouTube actual available formats");
+    foreach (var Format in new[] { "bv*[height<=360]+ba/b[height<=360]", "audio" })
+    {
+        var Download = new MediaJob { Request = new(ToolKind.Download, YouTubeUrl, Root, DownloadFormat: Format) };
+        await Engine.ExecuteAsync(Download, (_, _) => { }, default);
+        var Info = await Engine.ProbeAsync(Download.Output, default);
+        Check(Info.HasAudio && Info.Duration > 1 && (Format == "audio" ? !Info.HasVideo && Path.GetExtension(Download.Output) == ".mp3" : Info.HasVideo), Format == "audio" ? "YouTube MP3 extraction and validation" : "YouTube video + audio merge and validation");
+    }
 }
 await File.WriteAllTextAsync(Path.Combine(Root, "results.json"), JsonSerializer.Serialize(new { Passed = Passed.Count, Checks = Passed }, new JsonSerializerOptions { WriteIndented = true }));
 Console.WriteLine($"{Passed.Count} checks passed. Artifacts: {Root}");

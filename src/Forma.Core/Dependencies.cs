@@ -2,12 +2,13 @@ namespace Forma.Core;
 
 public sealed class Dependencies(AppSettings Settings)
 {
+    public static string ManagedToolsFolder => Path.Combine(AppSettings.DataFolder, "tools");
     public string Resolve(string Name)
     {
         if (Name == "python") return Settings.PythonPath;
         var Executable = Name + ".exe";
         var SearchPath = string.Join(Path.PathSeparator, Environment.GetEnvironmentVariable("PATH"), Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.User), Environment.GetEnvironmentVariable("PATH", EnvironmentVariableTarget.Machine));
-        foreach (var Folder in new[] { Settings.ToolFolder, Path.Combine(AppContext.BaseDirectory, "tools") }.Concat(SearchPath.Split(Path.PathSeparator)).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (var Folder in new[] { Settings.ToolFolder, ManagedToolsFolder, Path.Combine(AppContext.BaseDirectory, "tools") }.Concat(SearchPath.Split(Path.PathSeparator)).Distinct(StringComparer.OrdinalIgnoreCase))
             if (!string.IsNullOrWhiteSpace(Folder) && File.Exists(Path.Combine(Folder.Trim('"'), Executable))) return Path.GetFullPath(Path.Combine(Folder.Trim('"'), Executable));
         throw new FileNotFoundException($"{Executable} is missing. Choose its folder in Settings or add it to PATH, then restart Forma.");
     }

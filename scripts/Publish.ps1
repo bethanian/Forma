@@ -1,11 +1,13 @@
-param([string]$Dotnet = 'dotnet')
+param([string]$Dotnet = 'dotnet', [string]$Version = '1.1.0')
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $ReleaseRoot = Join-Path $ProjectRoot 'artifacts/release'
-$Output = Join-Path $ReleaseRoot 'Forma-1.0.0-win-x64'
+if ($Version -notmatch '^\d+\.\d+\.\d+$') { throw 'Use a numeric major.minor.patch version.' }
+$Output = Join-Path $ReleaseRoot "Forma-$Version-win-x64"
+$BuildOutput = Join-Path $ProjectRoot "artifacts/build/$Version/"
 if (Get-Process Forma.App -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq (Join-Path $Output 'Forma.App.exe') }) { throw 'Close the portable Forma app before publishing.' }
 New-Item -ItemType Directory -Force $Output | Out-Null
-& $Dotnet publish (Join-Path $ProjectRoot 'src/Forma.App/Forma.App.csproj') -c Release -p:Platform=x64 -r win-x64 --self-contained true -o $Output
+& $Dotnet publish (Join-Path $ProjectRoot 'src/Forma.App/Forma.App.csproj') -c Release -p:Platform=x64 "-p:BaseOutputPath=$BuildOutput" -r win-x64 --self-contained true -o $Output
 if ($LASTEXITCODE -ne 0) { throw 'Publish failed' }
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'LICENSE'),(Join-Path $ProjectRoot 'README.md') -Destination $Output
 Copy-Item -LiteralPath (Join-Path $ProjectRoot 'docs') -Destination $Output -Recurse -Force
@@ -45,8 +47,8 @@ foreach ($Framework in $RuntimeConfig.runtimeOptions.includedFrameworks) {
 }
 $Inventory | Sort-Object | Set-Content (Join-Path $Output 'DependencyInventory.txt')
 Compress-Archive -Path "$Output/*" -DestinationPath "$Output.zip" -CompressionLevel Optimal -Force
-Get-FileHash -LiteralPath "$Output.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  Forma-1.0.0-win-x64.zip" } | Set-Content "$Output.zip.sha256"
-$SourceFolder = Join-Path $ReleaseRoot 'Forma-1.0.0-source'
+Get-FileHash -LiteralPath "$Output.zip" -Algorithm SHA256 | ForEach-Object { "$($_.Hash)  Forma-$Version-win-x64.zip" } | Set-Content "$Output.zip.sha256"
+$SourceFolder = Join-Path $ReleaseRoot "Forma-$Version-source"
 New-Item -ItemType Directory -Force $SourceFolder | Out-Null
 foreach ($Name in 'src','worker','tests','scripts','docs') {
     $Base = Join-Path $ProjectRoot $Name

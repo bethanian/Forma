@@ -6,6 +6,7 @@ namespace Forma.Core;
 public sealed class MediaEngine(Dependencies Dependencies, string WorkerPath)
 {
     private readonly ProcessRunner Runner = new();
+    private string? VerifiedDownloader;
     public static void Validate(JobRequest Request)
     {
         if (!Enum.IsDefined(Request.Tool)) throw new ArgumentException("Unsupported tool.");
@@ -22,16 +23,28 @@ public sealed class MediaEngine(Dependencies Dependencies, string WorkerPath)
         if (Request.Codec is not ("libx264" or "libx265") || Request.Speed is not ("fast" or "medium" or "slow")) throw new ArgumentException("Unsupported video encoder or speed.");
         Request.Effects?.Validate();
     }
-    private List<string> DownloaderArguments()
+    private async Task<List<string>> DownloaderArgumentsAsync(string Url, CancellationToken Cancellation)
     {
+        var Executable = Dependencies.Resolve("yt-dlp");
+        var Identity = Executable + File.GetLastWriteTimeUtc(Executable).Ticks;
+        if (VerifiedDownloader != Identity)
+        {
+            var Installed = (await Runner.RunAsync(Executable, ["--version"], null, Cancellation, TimeSpan.FromSeconds(15))).Trim();
+            if (!Version.TryParse(Installed, out var InstalledVersion) || InstalledVersion < DownloaderUpdate.MinimumVersion) throw new IOException($"yt-dlp {Installed} is outdated. Open Settings → Dependencies → Update downloader, then retry this job.");
+            VerifiedDownloader = Identity;
+        }
         var Arguments = new List<string> { "--ignore-config", "--no-plugin-dirs", "--no-playlist", "--socket-timeout", "30", "--retries", "3", "--fragment-retries", "3", "--no-overwrites", "--windows-filenames", "--ffmpeg-location", Path.GetDirectoryName(Dependencies.Resolve("ffmpeg"))! };
-        try { Arguments.AddRange(["--js-runtimes", "deno:" + Dependencies.Resolve("deno")]); } catch (FileNotFoundException) { }
+        var RuntimeFound = false;
+        foreach (var Runtime in new[] { "deno", "node" })
+            try { Arguments.AddRange(["--js-runtimes", Runtime + ":" + Dependencies.Resolve(Runtime)]); RuntimeFound = true; break; } catch (FileNotFoundException) { }
+        var Host = new Uri(Url).Host;
+        if (!RuntimeFound && (Host.Equals("youtu.be", StringComparison.OrdinalIgnoreCase) || Host.Equals("youtube.com", StringComparison.OrdinalIgnoreCase) || Host.EndsWith(".youtube.com", StringComparison.OrdinalIgnoreCase))) throw new IOException("YouTube needs Deno or a supported Node.js runtime. Install Deno, then check dependencies in Settings.");
         return Arguments;
     }
     public async Task<IReadOnlyList<DownloadChoice>> InspectAsync(string Url, CancellationToken Cancellation)
     {
         Validate(new(ToolKind.Download, Url, Path.GetTempPath()));
-        var Arguments = DownloaderArguments();
+        var Arguments = await DownloaderArgumentsAsync(Url, Cancellation);
         Arguments.AddRange(["--dump-single-json", "--skip-download", "--", Url]);
         var Json = await Runner.RunAsync(Dependencies.Resolve("yt-dlp"), Arguments, null, Cancellation, TimeSpan.FromMinutes(2));
         using var Document = JsonDocument.Parse(Json);
@@ -91,7 +104,7 @@ public sealed class MediaEngine(Dependencies Dependencies, string WorkerPath)
             string Output;
             if (Request.Tool == ToolKind.Download)
             {
-                var Arguments = DownloaderArguments();
+                var Arguments = await DownloaderArgumentsAsync(Request.Input, Cancellation);
                 Arguments.AddRange(["--newline", "--progress-template", "download:FORMA_PROGRESS:%(progress._percent_str)s", "--print", "after_move:FORMA_OUTPUT:%(filepath)s", "-o", Path.Combine(Staging, "%(title).120B [%(id)s].%(ext)s")]);
                 if (Request.DownloadFormat == "audio") Arguments.AddRange(["-f", "ba/b", "-x", "--audio-format", "mp3", "--audio-quality", "0"]);
                 else Arguments.AddRange(["-f", Request.DownloadFormat, "--merge-output-format", "mp4"]);
@@ -110,7 +123,8 @@ public sealed class MediaEngine(Dependencies Dependencies, string WorkerPath)
                 Job.InputBytes = Info.Size;
                 if (!Info.HasAudio && (Request.Tool == ToolKind.AudioEffects || Request.Format is "mp3" or "wav" or "flac" or "aac")) throw new IOException("This file has no audio stream.");
                 if (!Info.HasVideo && Request.Format is "mp4" or "mkv" or "webm") throw new IOException("Choose an audio output format for an audio-only input.");
-                Output = Path.Combine(Staging, Path.GetFileNameWithoutExtension(Request.Input) + (Request.Tool == ToolKind.AudioEffects ? "_dreamy" : Request.Tool == ToolKind.Compress ? "_compressed" : "_converted") + "." + Request.Format);
+                var EffectSlug = string.Concat(Request.EffectName.Take(48).Select(Character => char.IsAsciiLetterOrDigit(Character) ? char.ToLowerInvariant(Character) : '_')).Trim('_');
+                Output = Path.Combine(Staging, Path.GetFileNameWithoutExtension(Request.Input) + (Request.Tool == ToolKind.AudioEffects ? "_" + (EffectSlug.Length > 0 ? EffectSlug : "dreamy") : Request.Tool == ToolKind.Compress ? "_compressed" : "_converted") + "." + Request.Format);
                 var Source = Request.Input;
                 if (Request.Tool == ToolKind.AudioEffects)
                 {
@@ -151,6 +165,14 @@ public sealed class MediaEngine(Dependencies Dependencies, string WorkerPath)
             var Difference = Job.InputBytes > 0 ? (1 - (double)Job.OutputBytes / Job.InputBytes) * 100 : 0;
             Job.Message = Request.Tool == ToolKind.Compress ? $"{Size(Job.InputBytes)} → {Size(Job.OutputBytes)} · {(Difference >= 0 ? $"{Difference:F1}% smaller" : $"{-Difference:F1}% larger")}" : $"Saved · {Size(Job.OutputBytes)}";
             Report(100, Job.Message);
+        }
+        catch (IOException Error) when (Request.Tool == ToolKind.Download && Error.Message.Contains("403", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new IOException("The provider refused this download (HTTP 403). Update downloader in Settings and retry. If it still fails, the media may require sign-in or be restricted.\n\n" + Error.Message, Error);
+        }
+        catch (IOException Error) when (Request.Tool == ToolKind.Download && (Error.Message.Contains("sign in", StringComparison.OrdinalIgnoreCase) || Error.Message.Contains("login required", StringComparison.OrdinalIgnoreCase)))
+        {
+            throw new IOException("This media requires sign-in or additional access. Forma supports public, legitimately accessible media.\n\n" + Error.Message, Error);
         }
         finally { try { Directory.Delete(Staging, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     }
